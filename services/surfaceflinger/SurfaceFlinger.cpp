@@ -119,6 +119,9 @@
 #include <layerproto/LayerProtoParser.h>
 #include "SurfaceFlingerProperties.h"
 
+#undef LOG_TAG
+#define LOG_TAG "SurfaceFlinger##jsd##"
+
 namespace android {
 
 using namespace android::hardware::configstore;
@@ -349,6 +352,9 @@ SurfaceFlinger::SurfaceFlinger(Factory& factory) : SurfaceFlinger(factory, SkipI
     int debugDdms = atoi(value);
     ALOGI_IF(debugDdms, "DDMS debugging not supported");
 
+    property_get("ro.sprd.superresolution", value, "0");
+    mEnabledSR = atoi(value);
+
     property_get("debug.sf.disable_backpressure", value, "0");
     mPropagateBackpressure = !atoi(value);
     ALOGI_IF(!mPropagateBackpressure, "Disabling backpressure propagation");
@@ -538,13 +544,6 @@ void SurfaceFlinger::bootFinished()
     if (window != 0) {
         window->linkToDeath(static_cast<IBinder::DeathRecipient*>(this));
     }
-    sp<IBinder> input(defaultServiceManager()->getService(
-            String16("inputflinger")));
-    if (input == nullptr) {
-        ALOGE("Failed to link to input service");
-    } else {
-        mInputFlinger = interface_cast<IInputFlinger>(input);
-    }
 
     if (mVrFlinger) {
       mVrFlinger->OnBootFinished();
@@ -559,7 +558,15 @@ void SurfaceFlinger::bootFinished()
     LOG_EVENT_LONG(LOGTAG_SF_STOP_BOOTANIM,
                    ns2ms(systemTime(SYSTEM_TIME_MONOTONIC)));
 
-    postMessageAsync(new LambdaMessage([this]() NO_THREAD_SAFETY_ANALYSIS {
+    sp<IBinder> input(defaultServiceManager()->getService(String16("inputflinger")));
+
+    postMessageAsync(new LambdaMessage([=]() NO_THREAD_SAFETY_ANALYSIS {
+        if (input == nullptr) {
+            ALOGE("Failed to link to input service");
+        } else {
+            mInputFlinger = interface_cast<IInputFlinger>(input);
+        }
+
         readPersistentProperties();
         mBootStage = BootStage::FINISHED;
 
@@ -959,6 +966,18 @@ status_t SurfaceFlinger::setActiveConfig(const sp<IBinder>& displayToken, int mo
     std::vector<int32_t> allowedConfig;
     allowedConfig.push_back(mode);
 
+    ALOGI("setActiveConfig :%d", mode);
+
+    // WORKAROUND For SR Switch.
+    // WMS sets -1000 at the beginning of the SR switch,
+    // and then sets the real config. After the SR switch is over, set -2000.
+    // WMS MUST set -2000 after setting -1000,
+    // otherwise the frame will be dropped all the time.
+    if (mode == mSRSwitchBegin)
+        mSkipSRFrame = true;
+    else if (mode == mSRSwitchEnd)
+        mSkipSRFrame = false;
+
     return setAllowedDisplayConfigs(displayToken, allowedConfig);
 }
 
@@ -1284,22 +1303,15 @@ status_t SurfaceFlinger::injectVSync(nsecs_t when) {
     return NO_ERROR;
 }
 
-status_t SurfaceFlinger::getLayerDebugInfo(std::vector<LayerDebugInfo>* outLayers) const
+status_t SurfaceFlinger::getLayerDebugInfo(std::vector<LayerDebugInfo>* outLayers)
         NO_THREAD_SAFETY_ANALYSIS {
-    // Try to acquire a lock for 1s, fail gracefully
-    const status_t err = mStateLock.timedLock(s2ns(1));
-    const bool locked = (err == NO_ERROR);
-    if (!locked) {
-        ALOGE("LayerDebugInfo: SurfaceFlinger unresponsive (%s [%d]) - exit", strerror(-err), err);
-        return TIMED_OUT;
-    }
-
     outLayers->clear();
-    mCurrentState.traverseInZOrder([&](Layer* layer) {
-        outLayers->push_back(layer->getLayerDebugInfo());
-    });
+    postMessageSync(new LambdaMessage([&]() { 
+            mDrawingState.traverseInZOrder([&](Layer* layer) {
+            outLayers->push_back(layer->getLayerDebugInfo());
+        });
 
-    mStateLock.unlock();
+    }));
     return NO_ERROR;
 }
 
@@ -1729,6 +1741,18 @@ bool SurfaceFlinger::handleMessageTransaction() {
         setTransactionFlags(eTransactionFlushNeeded);
     }
 
+    {
+        Mutex::Autolock lock(mPendingRemovedBufferLock);
+        if(!mLayersRemovedFromBufferQueue.isEmpty()){
+            for(const auto& l : mLayersRemovedFromBufferQueue){
+                if(l->isRemovedFromCurrentState()){
+                    latchAndReleaseBuffer(l);
+                }
+            }
+            mLayersRemovedFromBufferQueue.clear();
+        }
+    }
+
     return runHandleTransaction;
 }
 
@@ -1871,6 +1895,8 @@ void SurfaceFlinger::calculateWorkingSet() {
             }
 
             const auto& displayState = display->getState();
+            const auto& hwclayer = layer->getHwcLayer(displayDevice);
+            hwclayer->setSkipFlag(mSkipSRFrame);
             layer->setPerFrameData(displayDevice, displayState.transform, displayState.viewport,
                                    displayDevice->getSupportedPerFrameMetadata(),
                                    isHdrColorMode(displayState.colorMode) ? Dataspace::UNKNOWN
@@ -2198,6 +2224,10 @@ void SurfaceFlinger::rebuildLayerStacks() {
                 computeVisibleRegions(displayDevice, dirtyRegion, opaqueRegion);
 
                 mDrawingState.traverseInZOrder([&](Layer* layer) {
+                    if(displayDevice->isVirtual() && strstr(layer->getName().string(), "com.android.systemui.screenrecord.window.FloatWindow")){
+                        return;
+                    }
+
                     auto compositionLayer = layer->getCompositionLayer();
                     if (compositionLayer == nullptr) {
                         return;
@@ -2447,7 +2477,7 @@ void SurfaceFlinger::postFramebuffer(const sp<DisplayDevice>& displayDevice) {
     const auto displayId = display->getId();
 
     if (displayState.isEnabled) {
-        if (displayId) {
+        if (displayId && !mSkipSRFrame) {
             getHwComposer().presentAndGetReleaseFences(*displayId);
         }
         display->getRenderSurface()->onPresentDisplayCompleted();
@@ -3015,7 +3045,6 @@ void SurfaceFlinger::commitTransaction()
                 mOffscreenLayers.emplace(l.get());
             }
         }
-        mLayersPendingRemoval.clear();
     }
 
     // If this transaction is part of a window animation then the next frame
@@ -3040,6 +3069,9 @@ void SurfaceFlinger::commitTransaction()
         commitOffscreenLayers();
     });
 
+    if (!mLayersPendingRemoval.isEmpty()) {
+        mLayersPendingRemoval.clear();
+    }
     mTransactionPending = false;
     mAnimTransactionPending = false;
     mTransactionCV.broadcast();
@@ -3319,6 +3351,9 @@ void SurfaceFlinger::doDisplayComposition(const sp<DisplayDevice>& displayDevice
     base::unique_fd readyFence;
     if (!doComposeSurfaces(displayDevice, Region::INVALID_REGION, &readyFence)) return;
 
+    if (mSkipSRFrame)
+        readyFence = base::unique_fd(-1);
+
     // swap buffers (presentation)
     display->getRenderSurface()->queueBuffer(std::move(readyFence));
 }
@@ -3335,7 +3370,7 @@ bool SurfaceFlinger::doComposeSurfaces(const sp<DisplayDevice>& displayDevice,
     const bool supportProtectedContent = renderEngine.supportsProtectedContent();
 
     const Region bounds(displayState.bounds);
-    const DisplayRenderArea renderArea(displayDevice);
+    DisplayRenderArea renderArea(displayDevice);
     const bool hasClientComposition = getHwComposer().hasClientComposition(displayId);
     ATRACE_INT("hasClientComposition", hasClientComposition);
 
@@ -3377,6 +3412,8 @@ bool SurfaceFlinger::doComposeSurfaces(const sp<DisplayDevice>& displayDevice,
         }
 
         clientCompositionDisplay.physicalDisplay = displayState.scissor;
+
+
         clientCompositionDisplay.clip = displayState.scissor;
         const ui::Transform& displayTransform = displayState.transform;
         clientCompositionDisplay.globalTransform = displayTransform.asMatrix4();
@@ -3416,6 +3453,8 @@ bool SurfaceFlinger::doComposeSurfaces(const sp<DisplayDevice>& displayDevice,
         const Region clip(viewportRegion.intersect(layer->visibleRegion));
         ALOGV("Layer: %s", layer->getName().string());
         ALOGV("  Composition type: %s", toString(layer->getCompositionType(displayDevice)).c_str());
+        if (mEnabledSR)
+          renderArea.updateCropSR();
         if (!clip.isEmpty()) {
             switch (layer->getCompositionType(displayDevice)) {
                 case Hwc2::IComposerClient::Composition::CURSOR:
@@ -3955,6 +3994,9 @@ uint32_t SurfaceFlinger::setClientStateLocked(
         }
     }
     if (what & layer_state_t::eSizeChanged) {
+        if (s.h >= 10080) {
+            ALOGE("Surfaceflinger setcurrentStatelocke SizeChanged %4u, %4u \n", s.w, s.h);
+        }
         if (layer->setSize(s.w, s.h)) {
             flags |= eTraversalNeeded;
         }
@@ -4343,6 +4385,11 @@ void SurfaceFlinger::markLayerPendingRemovalLocked(const sp<Layer>& layer) {
     mLayersPendingRemoval.add(layer);
     mLayersRemoved = true;
     setTransactionFlags(eTransactionNeeded);
+}
+
+void SurfaceFlinger::markLayerRemovedFromBufferQueueLocked(const sp<Layer>& layer) {
+    Mutex::Autolock lock(mPendingRemovedBufferLock);
+    mLayersRemovedFromBufferQueue.add(layer);
 }
 
 void SurfaceFlinger::onHandleDestroyed(sp<Layer>& layer)
@@ -5888,7 +5935,10 @@ status_t SurfaceFlinger::captureScreenCommon(RenderArea& renderArea,
     }
 
     if (result == NO_ERROR) {
-        sync_wait(syncFd, -1);
+        int ret= sync_wait(syncFd, 3000);
+	if(ret < 0){
+	  ALOGE("Fence TimeOut 3000 ms return %d", ret);
+	}
         close(syncFd);
     }
 

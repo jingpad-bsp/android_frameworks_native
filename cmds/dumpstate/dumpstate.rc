@@ -5,7 +5,7 @@ on boot
 
 service dumpstate /system/bin/dumpstate -s
     class main
-    socket dumpstate stream 0660 shell log
+    socket dumpstate stream 0660 root root
     disabled
     oneshot
 
@@ -23,3 +23,24 @@ service bugreportd /system/bin/dumpstate -w
     class main
     disabled
     oneshot
+
+# Bug 1194677 [SDBG] Print CpuInfo.
+service sprd-rt-cpuinfo /system/bin/dumpstate -c
+    class main
+    disabled
+    oneshot
+
+
+# bugreportwdt for wdt monitor
+service bugreportW /system/bin/dumpstate -d -z -W
+    class main
+    disabled
+    oneshot
+
+# bugreportB for watchdog-thread block temporarily
+service bugreportWb /system/bin/dumpstate -b -d -z
+    class main
+    disabled
+    oneshot
+
+

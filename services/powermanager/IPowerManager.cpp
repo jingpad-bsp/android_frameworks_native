@@ -133,6 +133,57 @@ public:
         data.writeString16(message);
         return remote()->transact(CRASH, data, &reply, 0);
     }
+
+    // NOTE:  PQ Feature BEG-->
+    virtual void setSunLightProtectOn(bool on)
+    {
+        Parcel data, reply;
+        data.writeInterfaceToken(IPowerManager::getInterfaceDescriptor());
+        data.writeInt32(on);
+        remote()->transact(SET_SUNLIGHT_ON, data, &reply, 0);
+    }
+    virtual void setSunLightProtectTemporayDisabled(bool disabled)
+    {
+        Parcel data, reply;
+        data.writeInterfaceToken(IPowerManager::getInterfaceDescriptor());
+        data.writeInt32(disabled);
+        remote()->transact(SET_SUNLIGHT_DISABLED, data, &reply, 0);
+    }
+    // <-- NOTE: PQ Feature END
+
+    virtual status_t acquireWakeLockTimeout(int flags, const sp<IBinder>& lock, const String16& tag,
+            const String16& packageName, int64_t timeout, bool isOneWay)
+    {
+        Parcel data, reply;
+        data.writeInterfaceToken(IPowerManager::getInterfaceDescriptor());
+
+        data.writeStrongBinder(lock);
+        data.writeInt32(flags);
+        data.writeString16(tag);
+        data.writeString16(packageName);
+        data.writeInt32(0); // no WorkSource
+        data.writeString16(NULL, 0); // no history tag
+        data.writeInt64(timeout);
+        return remote()->transact(ACQUIRE_WAKE_LOCK_TIMEOUT, data, &reply,
+                isOneWay ? IBinder::FLAG_ONEWAY : 0);
+    }
+
+    virtual status_t acquireWakeLockWithUidTimeout(int flags, const sp<IBinder>& lock, const String16& tag,
+            const String16& packageName, int uid, int64_t timeout, bool isOneWay)
+    {
+        Parcel data, reply;
+        data.writeInterfaceToken(IPowerManager::getInterfaceDescriptor());
+
+        data.writeStrongBinder(lock);
+        data.writeInt32(flags);
+        data.writeString16(tag);
+        data.writeString16(packageName);
+        data.writeInt32(uid); // uid to blame for the work
+        data.writeInt64(timeout);
+        return remote()->transact(ACQUIRE_WAKE_LOCK_UID_TIMEOUT, data, &reply,
+                isOneWay ? IBinder::FLAG_ONEWAY : 0);
+    }
+
 };
 
 IMPLEMENT_META_INTERFACE(PowerManager, "android.os.IPowerManager");

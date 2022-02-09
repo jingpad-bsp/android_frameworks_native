@@ -584,6 +584,7 @@ void Layer::setCompositionType(const sp<const DisplayDevice>& display,
                  mName.string(), toString(type).c_str(), to_string(error).c_str(),
                  static_cast<int32_t>(error));
     }
+	// ALOGI("SPRD_SR Layer::setGeometry setDisplayFrame(%d,%d,%d,%d)", transformedFrame.left,transformedFrame.top,transformedFrame.right,transformedFrame.bottom);
 }
 
 Hwc2::IComposerClient::Composition Layer::getCompositionType(
@@ -1280,7 +1281,7 @@ LayerDebugInfo Layer::getLayerDebugInfo() const {
     LayerDebugInfo info;
     const State& ds = getDrawingState();
     info.mName = getName();
-    sp<Layer> parent = getParent();
+    sp<Layer> parent = mDrawingParent.promote();
     info.mParentName = (parent == nullptr ? std::string("none") : parent->getName().string());
     info.mType = std::string(getTypeId());
     info.mTransparentRegion = ds.activeTransparentRegion_legacy;
@@ -1433,6 +1434,10 @@ void Layer::addAndGetFrameTimestamps(const NewFrameEventsEntry* newTimestamps,
     if (outDelta) {
         mFrameEventHistory.getAndResetDelta(outDelta);
     }
+	/*ALOGI("SPRD_SR Layer::computeGeometry %s mesh.PositionArray[(%f,%f),(%f,%f),(%f,%f),(%f,%f)]",
+        mName.string(),position[0].x,position[0].y,position[1].x,position[1].y,
+        position[2].x,position[2].y,position[3].x,position[3].y);
+       */
 }
 
 size_t Layer::getChildrenCount() const {

@@ -876,6 +876,33 @@ binder::Status InstalldNativeService::snapshotAppData(
 
     auto scope_guard = android::base::make_scope_guard(deleter);
 
+    if (storageFlags & FLAG_STORAGE_DE) {
+        auto from = create_data_user_de_package_path(volume_uuid, user, package_name);
+        auto to = create_data_misc_de_rollback_path(volume_uuid, user, snapshotId);
+        auto rollback_package_path = create_data_misc_de_rollback_package_path(volume_uuid, user,
+            snapshotId, package_name);
+
+        int rc = create_dir_if_needed(to.c_str(), kRollbackFolderMode);
+        if (rc != 0) {
+            return error(rc, "Failed to create folder " + to);
+        }
+
+        rc = delete_dir_contents(rollback_package_path, true /* ignore_if_missing */);
+        if (rc != 0) {
+            return error(rc, "Failed clearing existing snapshot " + rollback_package_path);
+        }
+
+        // Check if we have data to copy.
+        if (access(from.c_str(), F_OK) == 0) {
+          rc = copy_directory_recursive(from.c_str(), to.c_str());
+        }
+        if (rc != 0) {
+            res = error(rc, "Failed copying " + from + " to " + to);
+            clear_de_on_exit = true;
+            return res;
+        }
+    }
+
     // The app may not have any data at all, in which case it's OK to skip here.
     auto from_ce = create_data_user_ce_package_path(volume_uuid, user, package_name);
     if (access(from_ce.c_str(), F_OK) != 0) {
@@ -899,30 +926,6 @@ binder::Status InstalldNativeService::snapshotAppData(
         // It should be fine to continue snapshot if we for some reason failed
         // to clear code_cache.
         LOG(WARNING) << "Failed to clear code_cache of app " << packageName;
-    }
-
-    if (storageFlags & FLAG_STORAGE_DE) {
-        auto from = create_data_user_de_package_path(volume_uuid, user, package_name);
-        auto to = create_data_misc_de_rollback_path(volume_uuid, user, snapshotId);
-        auto rollback_package_path = create_data_misc_de_rollback_package_path(volume_uuid, user,
-            snapshotId, package_name);
-
-        int rc = create_dir_if_needed(to.c_str(), kRollbackFolderMode);
-        if (rc != 0) {
-            return error(rc, "Failed to create folder " + to);
-        }
-
-        rc = delete_dir_contents(rollback_package_path, true /* ignore_if_missing */);
-        if (rc != 0) {
-            return error(rc, "Failed clearing existing snapshot " + rollback_package_path);
-        }
-
-        rc = copy_directory_recursive(from.c_str(), to.c_str());
-        if (rc != 0) {
-            res = error(rc, "Failed copying " + from + " to " + to);
-            clear_de_on_exit = true;
-            return res;
-        }
     }
 
     if (storageFlags & FLAG_STORAGE_CE) {
@@ -2813,6 +2816,48 @@ binder::Status InstalldNativeService::prepareAppProfile(const std::string& packa
 
     *_aidl_return = prepare_app_profile(packageName, userId, appId, profileName, codePath,
         dexMetadata);
+    return ok();
+}
+
+/* SPRD: backup and restore api {@ */
+binder::Status InstalldNativeService::backupApp(
+            const std::string& pkgName, const std::string& destPath,
+            int32_t callUid, int32_t callGid, int32_t* _aidl_return){
+    CHECK_ARGUMENT_PACKAGE_NAME(pkgName);
+    std::lock_guard<std::recursive_mutex> lock(mLock);
+
+    const char* packageName = pkgName.c_str();
+    const char* destPathDir = destPath.c_str();
+    *_aidl_return = _backup_app(packageName, destPathDir, callUid, callGid);
+    return ok();
+}
+
+binder::Status InstalldNativeService::restoreApp(
+            const std::string& sourcePath, const std::string& pkgName,
+            int32_t uid, int32_t gid, int32_t* _aidl_return){
+    CHECK_ARGUMENT_PACKAGE_NAME(pkgName);
+    std::lock_guard<std::recursive_mutex> lock(mLock);
+
+    const char* sourcePathDir = sourcePath.c_str();
+    const char* packageName = pkgName.c_str();
+    *_aidl_return = _restore_app(sourcePathDir, packageName, uid, gid);
+    return ok();
+}
+/* @} */
+
+binder::Status InstalldNativeService::copyFileToDir(
+            const std::string& sourceFile, const std::string& targetFile,
+            const std::string& targetDir, const std::string& pkgName,
+            int32_t uid, int32_t gid, int32_t* _aidl_return){
+    CHECK_ARGUMENT_PACKAGE_NAME(pkgName);
+    std::lock_guard<std::recursive_mutex> lock(mLock);
+
+    const char* source_file = sourceFile.c_str();
+    const char* target_file = targetFile.c_str();
+    const char* target_dir = targetDir.c_str();
+    const char* packageName = pkgName.c_str();
+
+    *_aidl_return = _copy_file_to_dir(source_file, target_file, target_dir, packageName, uid, gid);
     return ok();
 }
 

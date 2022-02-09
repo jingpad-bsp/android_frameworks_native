@@ -147,7 +147,14 @@ public:
 
         const bool isVendorService =
             strcmp(ProcessState::self()->getDriverName().c_str(), "/dev/vndbinder") == 0;
-        const long timeout = uptimeMillis() + 5000;
+#ifndef NO_USE_PROJECT_SEC /*vendor define NO_USE_PROJECT_SEC all the time for vndk rules*/
+#ifdef USE_PROJECT_SEC /*system define USE_PROJECT_SEC when open ccsa*/
+        const bool isSecurityService =
+            strcmp("security",String8(name).string()) == 0;
+#endif
+#endif
+        const long timeout = 5000;
+        int64_t startTime = uptimeMillis();
         if (!gSystemBootCompleted && !isVendorService) {
             // Vendor code can't access system properties
             char bootCompleted[PROPERTY_VALUE_MAX];
@@ -158,12 +165,30 @@ public:
         const long sleepTime = gSystemBootCompleted ? 1000 : 100;
 
         int n = 0;
-        while (uptimeMillis() < timeout) {
+        while (uptimeMillis() - startTime < timeout) {
             n++;
+#ifdef NO_USE_PROJECT_SEC /*vendor define NO_USE_PROJECT_SEC all the time for vndk rules*/
             ALOGI("Waiting for service '%s' on '%s'...", String8(name).string(),
                 ProcessState::self()->getDriverName().c_str());
             usleep(1000*sleepTime);
+#else
+#ifdef USE_PROJECT_SEC /*system define USE_PROJECT_SEC when open ccsa*/
+            if (isSecurityService) {
+                ALOGI("Waiting for security service %s...\n", String8(name).string());
+                usleep(1000*sleepTime);
+            } else {
+                ALOGI("Waiting for service '%s' on '%s'...", String8(name).string(),
+                    ProcessState::self()->getDriverName().c_str());
 
+                ALOGI("Waiting for service %s no sleep...\n", String8(name).string());
+                break;
+            }
+#else
+            ALOGI("Waiting for service '%s' on '%s'...", String8(name).string(),
+                ProcessState::self()->getDriverName().c_str());
+            usleep(1000*sleepTime);
+#endif /*USE_PROJECT_SEC*/
+#endif /*NO_USE_PROJECT_SEC*/
             sp<IBinder> svc = checkService(name);
             if (svc != nullptr) return svc;
         }

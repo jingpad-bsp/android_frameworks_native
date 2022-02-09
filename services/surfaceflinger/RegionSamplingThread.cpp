@@ -197,9 +197,10 @@ RegionSamplingThread::~RegionSamplingThread() {
 
 void RegionSamplingThread::addListener(const Rect& samplingArea, const sp<IBinder>& stopLayerHandle,
                                        const sp<IRegionSamplingListener>& listener) {
-    wp<Layer> stopLayer = stopLayerHandle != nullptr
-            ? static_cast<Layer::Handle*>(stopLayerHandle.get())->owner
-            : nullptr;
+    wp<Layer> stopLayer;
+    if (stopLayerHandle != nullptr && stopLayerHandle->localBinder() != nullptr) {
+        stopLayer = static_cast<Layer::Handle*>(stopLayerHandle.get())->owner;
+    }
 
     sp<IBinder> asBinder = IInterface::asBinder(listener);
     asBinder->linkToDeath(this);
@@ -342,9 +343,13 @@ void RegionSamplingThread::captureSample() {
     }
 
     const auto device = mFlinger.getDefaultDisplayDevice();
+    /*
     const auto display = device->getCompositionDisplay();
     const auto state = display->getState();
     const auto orientation = static_cast<ui::Transform::orientation_flags>(state.orientation);
+    Modify the path of orientation to avoid resource competition for Bug 1343983
+    */
+    const auto orientation = static_cast<ui::Transform::orientation_flags>(device->getOrientation());
 
     std::vector<RegionSamplingThread::Descriptor> descriptors;
     Region sampleRegion;
